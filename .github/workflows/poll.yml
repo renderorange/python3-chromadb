@@ -16,9 +16,15 @@ jobs:
       - name: Get latest version from PyPI
         id: pypi
         run: |
-          VERSION=$(curl -s https://pypi.org/pypi/chromadb/json | python3 -c "import sys, json; print(json.load(sys.stdin)['info']['version'])")
+          VERSION=$(curl -sf https://pypi.org/pypi/chromadb/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')
+          echo "Raw version: $VERSION"
+          if [[ "$VERSION" =~ (a|b|rc|alpha|beta) ]]; then
+            echo "Version $VERSION is a pre-release, skipping"
+            echo "version=none" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "PyPI latest: $VERSION"
+          echo "PyPI latest stable: $VERSION"
 
       - name: Get existing releases from GitHub
         id: github
@@ -35,13 +41,18 @@ jobs:
           PYPI_VERSION="${{ steps.pypi.outputs.version }}"
           EXISTING="${{ steps.github.outputs.existing }}"
           
+          if [ "$PYPI_VERSION" = "none" ]; then
+            echo "status=skip" >> $GITHUB_OUTPUT
+            echo "Latest version is pre-release, skipping"
+            exit 0
+          fi
+          
           for tag in $EXISTING; do
             if [ "$tag" = "$PYPI_VERSION" ]; then
               echo "status=already_released" >> $GITHUB_OUTPUT
               echo "Version $PYPI_VERSION already exists"
               exit 0
             fi
-            # Also check for v prefix
             if [ "$tag" = "v$PYPI_VERSION" ]; then
               echo "status=already_released" >> $GITHUB_OUTPUT
               echo "Version $PYPI_VERSION already exists (with v prefix)"
@@ -57,25 +68,22 @@ jobs:
         with:
           ref: main
           fetch-depth: 1
+        if: steps.check.outputs.status == 'needs_release'
 
       - name: Create release branch
         if: steps.check.outputs.status == 'needs_release'
         run: |
           PYPI_VERSION="${{ steps.pypi.outputs.version }}"
           
-          # Configure git
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           
-          # Create release branch from main
           git checkout -b "release/$PYPI_VERSION" origin/main
           
-          # Update VERSION file
           echo "$PYPI_VERSION" > VERSION
           git add VERSION
           git commit -m "Version $PYPI_VERSION"
           
-          # Push the branch (force to overwrite if it exists from a failed run)
           git push origin "release/$PYPI_VERSION" --force
           
           echo "Branch pushed, triggering build..."
@@ -87,12 +95,10 @@ jobs:
         run: |
           PYPI_VERSION="${{ steps.pypi.outputs.version }}"
           
-          # Get workflow ID
           WORKFLOW_ID=$(curl -s -H "Authorization: Bearer $PAT" \
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows" | \
             python3 -c "import sys, json; workflows = json.load(sys.stdin)['workflows']; print([w['id'] for w in workflows if w['name'] == 'Build and Release'][0])")
           
-          # Trigger workflow dispatch
           curl -X POST -H "Authorization: Bearer $PAT" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/workflows/$WORKFLOW_ID/dispatches" \
