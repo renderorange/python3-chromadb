@@ -78,6 +78,16 @@ SOURCE_DIR="$BUILD_DIR/src/chromadb-$VERSION"
 debug "SOURCE_DIR: $SOURCE_DIR"
 cd "$SOURCE_DIR"
 
+debug "Checking for known broken versions"
+case "$VERSION" in
+    1.5.[67])
+        echo "Error: chromadb $VERSION has a known Rust compilation bug"
+        echo "See: https://github.com/chroma-core/chroma/issues/6891"
+        echo "Use a different version (e.g. 1.5.5 or wait for a fix)"
+        exit 1
+        ;;
+esac
+
 debug "Installing chromadb to staging directory"
 pip3 install --break-system-packages --no-deps --target=staging .
 
