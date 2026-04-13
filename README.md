@@ -1,10 +1,10 @@
 # ChromaDB Debian Package Builder
 
-Builds `.deb` packages for [ChromaDB](https://pypi.org/pypi/chromadb).
+Builds `.deb` packages for [ChromaDB](https://pypi.org/pypi/chromadb) from pre-built wheels.
 
 ## Usage
 
-Build requires: `curl`, `python3`, `pip3`, `protoc`
+Build requires: `curl`, `python3`
 
 ```bash
 # Build latest version
@@ -35,10 +35,9 @@ Package dependencies (`python3`, `python3-pydantic`, `python3-hnswlib`) are auto
 sudo apt remove python3-chromadb
 ```
 
-## Known Limitations
+## Supported Architectures
 
-- Package contains compiled Rust extensions and must be built for each target architecture (amd64, arm64, etc.)
-- Requires `protoc` to build (install with: `sudo apt install protobuf-compiler`)
+- `amd64` (x86_64)
 
 ## Tests
 
@@ -51,7 +50,7 @@ sudo apt remove python3-chromadb
 
 # Run individual tests
 ./tests/01-syntax.sh   # Script syntax check
-./tests/02-build.sh    # Build package and validate (requires pip3)
+./tests/02-build.sh    # Build package and validate
 ```
 
 ## Build Automation

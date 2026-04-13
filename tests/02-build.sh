@@ -18,38 +18,24 @@ debug() {
 
 echo "Running build and package validation..."
 
-debug "Checking for pip3"
-if ! command -v pip3 >/dev/null 2>&1; then
-    echo "SKIP: pip3 not available (required for build)"
-    exit 0
-fi
-
-debug "Checking for protoc"
-if ! command -v protoc >/dev/null 2>&1; then
-    echo "SKIP: protoc not available (required for build)"
-    exit 0
-fi
-
-debug "Creating temp build directory"
 BUILD_DIR=$(mktemp -d)
-debug "BUILD_DIR: $BUILD_DIR"
 trap "rm -rf $BUILD_DIR" EXIT
 
 ARCH=$(dpkg --print-architecture)
 
 export MAINTAINER_EMAIL="test@example.com"
-export VERSION="0.4.24"
+export VERSION="1.0.0"
 debug "MAINTAINER_EMAIL=$MAINTAINER_EMAIL VERSION=$VERSION ARCH=$ARCH"
 
 debug "Running build-deb"
-bash bin/build-deb 0.4.24 >/dev/null 2>&1
+MAINTAINER_EMAIL="$MAINTAINER_EMAIL" bash bin/build-deb "$VERSION" >/dev/null 2>&1
 
-if [ ! -f "python3-chromadb_0.4.24-1_${ARCH}.deb" ]; then
+if [ ! -f "python3-chromadb_${VERSION}-1_${ARCH}.deb" ]; then
     echo "FAIL: .deb file not created"
     exit 1
 fi
 
-DEB_FILE="python3-chromadb_0.4.24-1_${ARCH}.deb"
+DEB_FILE="python3-chromadb_${VERSION}-1_${ARCH}.deb"
 
 echo "PASS: .deb file created"
 
@@ -60,13 +46,13 @@ if ! grep -q "Package: python3-chromadb" "$BUILD_DIR/info.txt"; then
     exit 1
 fi
 
-if ! grep -q "Version: 0.4.24-1" "$BUILD_DIR/info.txt"; then
+if ! grep -q "Version: ${VERSION}-1" "$BUILD_DIR/info.txt"; then
     echo "FAIL: Missing or wrong Version field"
     exit 1
 fi
 
-if ! grep -q "Architecture: any" "$BUILD_DIR/info.txt"; then
-    echo "FAIL: Missing Architecture field"
+if ! grep -q "Architecture: $ARCH" "$BUILD_DIR/info.txt"; then
+    echo "FAIL: Missing Architecture field (expected: $ARCH)"
     exit 1
 fi
 
@@ -81,8 +67,6 @@ if ! grep -q "Depends: python3, python3-pydantic, python3-hnswlib" "$BUILD_DIR/i
 fi
 
 echo "PASS: Package info fields valid"
-
-dpkg-deb --info "$DEB_FILE" > "$BUILD_DIR/info.txt"
 
 if ! grep -q "copyright" "$BUILD_DIR/info.txt"; then
     echo "FAIL: Missing copyright file in package"
@@ -100,4 +84,6 @@ if ! grep -q "md5sums" "$BUILD_DIR/info.txt"; then
 fi
 
 echo "PASS: Package metadata files present"
+
+rm -f "$DEB_FILE"
 echo "ALL TESTS PASSED"

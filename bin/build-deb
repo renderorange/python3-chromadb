@@ -43,10 +43,17 @@ echo "Building python3-chromadb version $VERSION"
 ARCH=$(dpkg --print-architecture)
 debug "Building for architecture: $ARCH"
 
-if ! command -v protoc >/dev/null 2>&1; then
-    echo "Error: protobuf-compiler required. Install with: sudo apt install protobuf-compiler"
-    exit 1
-fi
+# Map Debian arch to wheel platform arch
+case "$ARCH" in
+    amd64)  WHEEL_ARCH="x86_64" ;;
+    arm64)  WHEEL_ARCH="aarch64" ;;
+    armhf)  WHEEL_ARCH="armv7l" ;;
+    *)
+        echo "Error: unsupported architecture: $ARCH"
+        exit 1
+        ;;
+esac
+debug "Wheel architecture: $WHEEL_ARCH"
 
 debug "Creating temp build directory"
 BUILD_DIR=$(mktemp -d)
@@ -58,59 +65,43 @@ debug "Created $BUILD_DIR/src"
 cd "$BUILD_DIR/src"
 
 debug "Fetching PyPI metadata for version $VERSION"
-URL=$(curl -sf "https://pypi.org/pypi/chromadb/$VERSION/json" | python3 -c 'import json,sys; d=json.load(sys.stdin); urls=[u["url"] for u in d["urls"] if u["packagetype"]=="sdist"]; print(urls[0] if urls else "")')
-debug "Source URL: $URL"
+WHEEL_URL=$(curl -sf "https://pypi.org/pypi/chromadb/$VERSION/json" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+arch = '$WHEEL_ARCH'
+for u in d['urls']:
+    if u['packagetype'] == 'bdist_wheel' and arch in u['filename'] and 'manylinux' in u['filename']:
+        print(u['url'])
+        break
+")
+debug "Wheel URL: $WHEEL_URL"
 
-if [ -z "$URL" ]; then
-    echo "Error: No source tarball available for version $VERSION"
+if [ -z "$WHEEL_URL" ]; then
+    echo "Error: No pre-built wheel found for $ARCH (version $VERSION)"
     exit 1
 fi
 
-echo "Downloading chromadb $VERSION source from PyPI..."
-debug "Downloading from: $URL"
-curl -sL "$URL" -o chromadb.tar.gz
+echo "Downloading chromadb $VERSION wheel for $ARCH..."
+debug "Downloading from: $WHEEL_URL"
+curl -sL "$WHEEL_URL" -o chromadb.whl
 
-echo "Extracting source..."
-debug "Extracting tarball"
-tar -xzf chromadb.tar.gz
+echo "Extracting wheel..."
+debug "Extracting wheel"
+python3 -m zipfile -e chromadb.whl wheel/
 
-SOURCE_DIR="$BUILD_DIR/src/chromadb-$VERSION"
-debug "SOURCE_DIR: $SOURCE_DIR"
-cd "$SOURCE_DIR"
+debug "Contents:"
+ls wheel/
 
-debug "Checking for known broken versions"
-case "$VERSION" in
-    1.5.[67])
-        echo "Error: chromadb $VERSION has a known Rust compilation bug"
-        echo "See: https://github.com/chroma-core/chroma/issues/6891"
-        echo "Use a different version (e.g. 1.5.5 or wait for a fix)"
-        exit 1
-        ;;
-esac
-
-debug "Installing chromadb to staging directory"
-pip3 install --break-system-packages --no-deps --target=staging .
-
-# Find only chromadb packages
-debug "Filtering to keep only chromadb package"
-cd staging
-for dir in */; do
-    if [ "$dir" != "chromadb/" ]; then
-        debug "Removing non-chromadb: $dir"
-        rm -rf "$dir"
-    fi
-done
-cd ..
-
-debug "Cleaning up staging"
-rm -rf staging/__pycache__ staging/*.egg-info
-
-PKG_DIR="$SOURCE_DIR/debian/chromadb"
+PKG_DIR="$BUILD_DIR/src/debian/chromadb"
 debug "PKG_DIR: $PKG_DIR"
 mkdir -p "$PKG_DIR/usr/lib/python3/dist-packages"
-debug "Copying staging to package dir"
-cp -r staging/* "$PKG_DIR/usr/lib/python3/dist-packages/"
-rm -rf staging
+
+debug "Copying packages to staging"
+for item in chromadb chromadb_rust_bindings schemas; do
+    if [ -d "wheel/$item" ]; then
+        cp -r "wheel/$item" "$PKG_DIR/usr/lib/python3/dist-packages/"
+    fi
+done
 
 # Create DEBIAN/control
 debug "Creating DEBIAN/control"
@@ -118,7 +109,7 @@ mkdir -p "$PKG_DIR/DEBIAN"
 cat > "$PKG_DIR/DEBIAN/control" << EOF
 Package: python3-chromadb
 Version: $VERSION-1
-Architecture: any
+Architecture: $ARCH
 Depends: python3, python3-pydantic, python3-hnswlib
 Maintainer: $MAINTAINER_EMAIL
 Description: ChromaDB Python library
@@ -161,8 +152,10 @@ License: MIT
  SOFTWARE.
 EOF
 
-find . -type f ! -path './DEBIAN/*' -exec md5sum {} \; > "$PKG_DIR/DEBIAN/md5sums"
-sed -i 's|  ./|  |' "$PKG_DIR/DEBIAN/md5sums"
+find "$PKG_DIR" -path "$PKG_DIR/DEBIAN" -prune -o -type f -print | while read f; do
+    rel="${f#$PKG_DIR/}"
+    md5sum "$f" | sed "s|  $PKG_DIR/|  |"
+done > "$PKG_DIR/DEBIAN/md5sums"
 
 echo "Building .deb..."
 dpkg-deb --build "$PKG_DIR" "$BUILD_DIR/src/python3-chromadb_${VERSION}-1_${ARCH}.deb"
