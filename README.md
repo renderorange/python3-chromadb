@@ -67,6 +67,6 @@ This repo runs two github actions to automate building and releasing new version
 
 ## LICENSE AND COPYRIGHT
 
-ChromaDB is Copyright (c) 2023 ChromaDB Contributors (MIT License).
+ChromaDB is Copyright (c) 2023 ChromaDB Contributors (Apache License 2.0).
 
 This packaging script is Copyright (c) 2026 Blaine Motsinger (MIT License).
