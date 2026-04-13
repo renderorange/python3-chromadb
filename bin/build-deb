@@ -1,0 +1,161 @@
+#!/bin/bash
+set -e
+
+DEBUG=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -d|--debug) DEBUG=1; shift ;;
+        -h|--help) echo "Usage: $0 [version] [--debug]"; exit 0 ;;
+        *) VERSION="$1"; shift ;;
+    esac
+done
+
+debug() {
+    if [ "$DEBUG" = "1" ]; then
+        echo "[DEBUG] $*"
+    fi
+}
+
+debug "Script started with DEBUG=$DEBUG"
+
+if [ -z "$MAINTAINER_EMAIL" ]; then
+    echo "Error: MAINTAINER_EMAIL env var not set"
+    echo "Usage: MAINTAINER_EMAIL=you@example.com ./bin/build-deb [version]"
+    exit 1
+fi
+
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+debug "PROJECT_ROOT: $PROJECT_ROOT"
+
+debug "VERSION: ${VERSION:-<latest>}"
+
+if [ -z "$VERSION" ]; then
+    VERSION=$(curl -sf https://pypi.org/pypi/chromadb/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')
+    debug "Fetched latest version: $VERSION"
+    if [ -z "$VERSION" ]; then
+        echo "Error: Failed to fetch latest version from PyPI"
+        exit 1
+    fi
+fi
+
+echo "Building python3-chromadb version $VERSION"
+
+ARCH=$(dpkg --print-architecture)
+debug "Building for architecture: $ARCH"
+
+if ! command -v protoc >/dev/null 2>&1; then
+    echo "Error: protobuf-compiler required. Install with: sudo apt install protobuf-compiler"
+    exit 1
+fi
+
+debug "Creating temp build directory"
+BUILD_DIR=$(mktemp -d)
+debug "BUILD_DIR: $BUILD_DIR"
+trap "rm -rf $BUILD_DIR" EXIT
+
+mkdir -p "$BUILD_DIR/src"
+debug "Created $BUILD_DIR/src"
+cd "$BUILD_DIR/src"
+
+debug "Fetching PyPI metadata for version $VERSION"
+URL=$(curl -sf "https://pypi.org/pypi/chromadb/$VERSION/json" | python3 -c 'import json,sys; d=json.load(sys.stdin); urls=[u["url"] for u in d["urls"] if u["packagetype"]=="sdist"]; print(urls[0] if urls else "")')
+debug "Source URL: $URL"
+
+if [ -z "$URL" ]; then
+    echo "Error: No source tarball available for version $VERSION"
+    exit 1
+fi
+
+echo "Downloading chromadb $VERSION source from PyPI..."
+debug "Downloading from: $URL"
+curl -sL "$URL" -o chromadb.tar.gz
+
+echo "Extracting source..."
+debug "Extracting tarball"
+tar -xzf chromadb.tar.gz
+
+SOURCE_DIR="$BUILD_DIR/src/chromadb-$VERSION"
+debug "SOURCE_DIR: $SOURCE_DIR"
+cd "$SOURCE_DIR"
+
+debug "Installing chromadb to staging directory"
+pip3 install --break-system-packages --no-deps --target=staging .
+
+# Find only chromadb packages
+debug "Filtering to keep only chromadb package"
+cd staging
+for dir in */; do
+    if [ "$dir" != "chromadb/" ]; then
+        debug "Removing non-chromadb: $dir"
+        rm -rf "$dir"
+    fi
+done
+cd ..
+
+debug "Cleaning up staging"
+rm -rf staging/__pycache__ staging/*.egg-info
+
+PKG_DIR="$SOURCE_DIR/debian/chromadb"
+debug "PKG_DIR: $PKG_DIR"
+mkdir -p "$PKG_DIR/usr/lib/python3/dist-packages"
+debug "Copying staging to package dir"
+cp -r staging/* "$PKG_DIR/usr/lib/python3/dist-packages/"
+rm -rf staging
+
+# Create DEBIAN/control
+debug "Creating DEBIAN/control"
+mkdir -p "$PKG_DIR/DEBIAN"
+cat > "$PKG_DIR/DEBIAN/control" << EOF
+Package: python3-chromadb
+Version: $VERSION-1
+Architecture: any
+Depends: python3, python3-pydantic, python3-hnswlib
+Maintainer: $MAINTAINER_EMAIL
+Description: ChromaDB Python library
+ A vector database for AI applications.
+Section: python
+EOF
+
+cat > "$PKG_DIR/DEBIAN/postinst" << 'EOF'
+#!/bin/bash
+set -e
+case "$1" in
+    configure)
+        ;;
+esac
+EOF
+chmod +x "$PKG_DIR/DEBIAN/postinst"
+
+cat > "$PKG_DIR/DEBIAN/copyright" << 'EOF'
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/upstream.html
+Copyright: 2023 ChromaDB Contributors
+License: MIT
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+EOF
+
+find . -type f ! -path './DEBIAN/*' -exec md5sum {} \; > "$PKG_DIR/DEBIAN/md5sums"
+sed -i 's|  ./|  |' "$PKG_DIR/DEBIAN/md5sums"
+
+echo "Building .deb..."
+dpkg-deb --build "$PKG_DIR" "$BUILD_DIR/src/python3-chromadb_${VERSION}-1_${ARCH}.deb"
+
+cp "$BUILD_DIR/src/python3-chromadb_${VERSION}-1_${ARCH}.deb" "$PROJECT_ROOT/"
+echo "Done: python3-chromadb_${VERSION}-1_${ARCH}.deb"

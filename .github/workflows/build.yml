@@ -1,0 +1,81 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - 'release/*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Build .deb package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MAINTAINER_EMAIL: ${{ vars.MAINTAINER_EMAIL || 'bot@github.com' }}
+        run: |
+          ./bin/build-deb $VERSION
+
+      - name: Run tests
+        run: |
+          bash tests/run.sh
+
+      - name: Create git tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git tag ${{ steps.version.outputs.version }}
+
+      - name: Push tag
+        run: |
+          git push origin ${{ steps.version.outputs.version }}
+
+      - name: Find .deb file
+        id: deb
+        run: |
+          ARCH=$(dpkg --print-architecture)
+          DEB_FILE=$(ls python3-chromadb_*_${ARCH}.deb | head -1)
+          echo "path=$DEB_FILE" >> $GITHUB_OUTPUT
+          echo "filename=python3-chromadb_${{ steps.version.outputs.version }}-1_${ARCH}.deb" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2.5.0
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: |
+            https://pypi.org/project/chromadb/${{ steps.version.outputs.version }}/
+          draft: false
+          generate_release_notes: false
+          files: ${{ steps.deb.outputs.path }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Delete release branch
+        run: |
+          git push origin --delete ${{ github.ref_name }}
